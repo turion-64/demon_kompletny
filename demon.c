@@ -277,7 +277,7 @@ int main(int argc, char *argv[]) {
 
     // start logowania
     openlog("DEMONIARZ", LOG_PID | LOG_CONS, LOG_USER);
-    syslog(LOG_INFO, "Demon synchronizacji uruchomiony. Źródło: %s, Cel: %s, Czas: %d s, Rekurencja: %d, Próg: %ld", 
+    syslog(LOG_INFO, "Demon synchronizacji uruchomiony. Źródło: %s, Cel: %s, Czas: %d s, Rekurencja: %d, Próg: %lld", 
            source_path, target_path, sleep_time, recursive, threshold);
 
     // rejestracja obsługi SIGUSR1
