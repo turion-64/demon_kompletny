@@ -62,7 +62,8 @@ void demonizacja() {
         close(x);
     }
 
-    //oprócz stdin, stdout i stderr które idą do /dev/null
+    //przekierowanie stdin, stdout i stderr do /dev/null
+    //do zgłaszania błędów i informacji używamy syslog w trybie demona
     int fd0 = open("/dev/null", O_RDWR);
     int fd1 = dup(fd0);
     int fd2 = dup(fd0);
@@ -274,7 +275,7 @@ int main(int argc, char *argv[]) {
 
     char source_path[PATH_MAX], target_path[PATH_MAX];
     if (!realpath(argv[1], source_path) || !realpath(argv[2], target_path)) {
-        perror("Błąd rozwiązywania ścieżek");
+        fprintf(stderr, "Błąd rozwiązywania ścieżek\n");
         return EXIT_FAILURE;
     }
 
