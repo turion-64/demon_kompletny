@@ -31,21 +31,26 @@ int is_directory(const char *path) {
 
 // Funkcja zamieniająca proces w demona
 void demonizacja() {
+    //pierwszy fork odłączający program od terminala
+    //w wyniku tego uzytkownik dostaje z powrotem shell
     pid_t pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
-    if (pid > 0) exit(EXIT_SUCCESS); 
+    if (pid > 0) exit(EXIT_SUCCESS);
 
-    if (setsid() < 0) exit(EXIT_FAILURE); 
+    if (setsid() < 0) exit(EXIT_FAILURE);
 
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
 
-    pid = fork(); 
+    //zgodnie ze sztuką wywoływania demonów powinno się robić drugi fork
+    //by zapobiec przypadkowej reaktywacji terminala
+    //(np. wskutek ponownego otwarcia tty)
+    pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
 
-    umask(0); 
-    chdir("/"); 
+    umask(0);
+    chdir("/");
 
     int x;
     for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
@@ -55,20 +60,20 @@ void demonizacja() {
 
 // funkcja kopiująca duże pliki za pomocą mmap (podpunkt b)
 void copy_file_mmap(int fd_src, int fd_dst, size_t size) {
-    // Rozszerzenie pliku docelowego do wymaganego rozmiaru
+    // ftruncate rozszerza fd_dst do rozmiaru źródła
     if (ftruncate(fd_dst, size) == -1) {
         syslog(LOG_ERR, "Błąd ftruncate: %s", strerror(errno));
         return;
     }
 
-    // Mapowanie źródła
+    // mapowanie źródła
     void *src_map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd_src, 0);
     if (src_map == MAP_FAILED) {
         syslog(LOG_ERR, "Błąd mmap dla źródła: %s", strerror(errno));
         return;
     }
 
-    // Mapowanie celu
+    // mapowanie celu
     void *dst_map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_dst, 0);
     if (dst_map == MAP_FAILED) {
         syslog(LOG_ERR, "Błąd mmap dla celu: %s", strerror(errno));
@@ -76,17 +81,18 @@ void copy_file_mmap(int fd_src, int fd_dst, size_t size) {
         return;
     }
 
-    // Kopiowanie w pamięci RAM
+    // faktyczny proces kopiowania
     memcpy(dst_map, src_map, size);
 
-    // Synchronizacja z dyskiem i odmapowanie
+    // synchronizacja z dyskiem i odmapowanie
     msync(dst_map, size, MS_SYNC);
     munmap(src_map, size);
     munmap(dst_map, size);
 }
 
-// Funkcja kopiująca plik posiadająca logikę wyboru metody
+// funkcja kopiująca plik posiadająca logikę wyboru metody
 void copy_file(const char *src, const char *dst, off_t threshold) {
+    //otwarcie źródła read-only
     int fd_src = open(src, O_RDONLY);
     if (fd_src < 0) return;
 
@@ -97,13 +103,14 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
     }
     size_t file_size = st.st_size;
 
+    //otwarcie celu do odczytu i zapisu, tworząc go jeśli nie istnieje
     int fd_dst = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
     if (fd_dst < 0) {
         close(fd_src);
         return;
     }
 
-    // Logika wyboru metody
+    // jeśli plik jest większy niż threshold używany jest mmap (podpunkt b)
     if (file_size > (size_t)threshold) {
         syslog(LOG_INFO, "Kopiowanie mmap (duży plik: %ld bajtów): %s", file_size, src);
         copy_file_mmap(fd_src, fd_dst, file_size);
@@ -111,48 +118,44 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
         syslog(LOG_INFO, "Kopiowanie read/write (mały plik: %ld bajtów): %s", file_size, src);
 
         char buffer[8192];
-        ssize_t bytes_read, bytes_written;
+        ssize_t bytes_read;
         
         while ((bytes_read = read(fd_src, buffer, sizeof(buffer))) > 0) {
-            ssize_t total_written = 0;
-            // Bezpieczna pętla write - zabezpiecza przed częściowym zapisem
-            while (total_written < bytes_read) {
-                bytes_written = write(fd_dst, buffer + total_written, bytes_read - total_written);
-                if (bytes_written < 0) {
-                    if (errno == EINTR) continue; // Przerwanie systemowe, ponów
-                    syslog(LOG_ERR, "Błąd zapisu: %s", strerror(errno));
-                    break;
-                }
-                total_written += bytes_written;
-            }
+            write(fd_dst, buffer, bytes_read);
         }
     }
 
+    // zamknięcie plików
     close(fd_src);
     close(fd_dst);
 
-    // Kopiowanie daty modyfikacji
-    struct utimbuf new_times;
-    new_times.actime = st.st_atime;
-    new_times.modtime = st.st_mtime;
-    utime(dst, &new_times);
+    // kopiowanie czasu modyfikacji i dostępu
+    struct utimbuf new_time;
+    new_time.actime = st.st_atime;
+    new_time.modtime = st.st_mtime;
+    utime(dst, &new_time);
 }
 
-// Czyści podkatalogi do usunięcia
+// czyści katalog rekurencyjnie
 void remove_recursive(const char *path) {
     DIR *dir = opendir(path);
     if (dir == NULL) return;
 
     struct dirent *entry;
+    //tak informacyjnie path_max zwykle rozwija się do 4096
     char full_path[PATH_MAX];
     struct stat st;
 
+    //dla każdego wpisu
     while ((entry = readdir(dir)) != NULL) {
+        //pomijamy wpis z d_name . i ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
+        //tworzymy full path
         snprintf(full_path, PATH_MAX, "%s/%s", path, entry->d_name);
 
         if (lstat(full_path, &st) == 0) {
+            //znaleźliśmy podkatalog
             if (S_ISDIR(st.st_mode)) {
                 syslog(LOG_INFO, "Schodze glebiej do podkatalogu: %s", full_path);
                 remove_recursive(full_path);
@@ -175,28 +178,33 @@ void synchronize_directories(const char *source_dir, const char *target_dir, off
     struct stat src_st, tgt_st;
     char src_path[PATH_MAX], tgt_path[PATH_MAX];
 
-    // --- ETAP 1: Kopiowanie ze źródła do celu ---
+    //1. Najpierw kopiujemy ze źródła do celu
     dir = opendir(source_dir);
     if (dir == NULL) {
         syslog(LOG_ERR, "Nie mozna otworzyc katalogu zrodlowego: %s", source_dir);
         return;
     }
 
+    //dla każdego wpisu
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
+        //budujemy ścieżkę źródła
         snprintf(src_path, PATH_MAX, "%s/%s", source_dir, entry->d_name);
+        //budujemy ścieżkę celu
         snprintf(tgt_path, PATH_MAX, "%s/%s", target_dir, entry->d_name);
 
+        //jeśli nie uda się pobrać informacji o pliku pomijamy go
         if (lstat(src_path, &src_st) != 0) continue;
 
         if (S_ISREG(src_st.st_mode)) {
-            // Sprawdzamy czy plik trzeba skopiować (brak w celu lub starszy/inny rozmiar w celu)
-            if (lstat(tgt_path, &tgt_st) != 0 || src_st.st_mtime > tgt_st.st_mtime || src_st.st_size != tgt_st.st_size) {
+            // warunki: nie ma pliku w celu (a), plik jest starszy(b)
+            if (lstat(tgt_path, &tgt_st) != 0 || src_st.st_mtime > tgt_st.st_mtime) {
                 copy_file(src_path, tgt_path, threshold);
             }
         }
         else if (S_ISDIR(src_st.st_mode) && recursive) {
+            //napotkaliśmy katalog. Jeśli go nie ma w celu, tworzymy go
             if (lstat(tgt_path, &tgt_st) != 0) {
                 mkdir(tgt_path, src_st.st_mode); 
                 syslog(LOG_INFO, "Utworzono katalog: %s", tgt_path);
@@ -206,7 +214,8 @@ void synchronize_directories(const char *source_dir, const char *target_dir, off
     }
     closedir(dir);
 
-    // --- ETAP 2: Usuwanie z celu plików, których nie ma w źródle ---
+    //2. Następnie usuwamy z celu pliki, których nie ma w źródle
+    //zasada działania jest niemal identyczna jak w punkcie 1. więc komentarze są zbędne
     dir = opendir(target_dir);
     if (dir != NULL) {
         while ((entry = readdir(dir)) != NULL) {
@@ -248,47 +257,42 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    // Bezpieczne parsowanie argumentów opcjonalnych
+    // argumenty opcjonalne
+    // domyślnie czas snu: 5 minut, brak rekurencji, próg mmap 10MB
     int sleep_time = 300; 
     int recursive = 0;
-    off_t threshold = 10 * 1024 * 1024; // 10MB
+    off_t threshold = 10 * 1024 * 1024;
     
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "-R") == 0) {
             recursive = 1;
         } else if (atoi(argv[i]) > 0 && i == 3) { 
-            // Zakładamy, że 3 argument (jeśli jest cyfrą) to czas
             sleep_time = atoi(argv[i]);
         } else if (atol(argv[i]) > 0) {
-            // Każda inna liczba jest traktowana jako próg
             threshold = atol(argv[i]);
         }
     }
 
     demonizacja();
 
-    // Start logowania
+    // start logowania
     openlog("DEMONIARZ", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "Demon synchronizacji uruchomiony. Źródło: %s, Cel: %s, Czas: %d s, Rekurencja: %d, Próg: %ld", 
            source_path, target_path, sleep_time, recursive, threshold);
 
-    // Rejestracja obsługi SIGUSR1
+    // rejestracja obsługi SIGUSR1
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigusr1_handler;
     sigaction(SIGUSR1, &sa, NULL);
 
-    // Główna pętla demona
+    // pętla główna
     while (1) {
-        // Wykonaj synchronizację
-        synchronize_directories(source_path, target_path, threshold, recursive);
-
-        // Uśpij proces (jeśli w międzyczasie nie przyszedł sygnał)
+        // zaczynamy od snu
         if (!signal_received) {
             syslog(LOG_INFO, "Demon usypia na %d sekund...", sleep_time);
             int time_left = sleep_time;
-            
-            // Pętla snu - gwarantuje, że obudzimy się po czasie lub po sygnale
+
             while (time_left > 0 && !signal_received) {
                 time_left = sleep(time_left);
             }
@@ -296,10 +300,12 @@ int main(int argc, char *argv[]) {
 
         if (signal_received) {
             syslog(LOG_INFO, "Demon wybudzony natychmiastowo przez sygnał SIGUSR1.");
-            signal_received = 0; // Reset flagi przed kolejną iteracją
+            signal_received = 0;
         } else {
-            syslog(LOG_INFO, "Demon wybudzony naturalnie.");
+            syslog(LOG_INFO, "Demon wybudzony naturalnie po upływie czasu snu.");
         }
+
+        synchronize_directories(source_path, target_path, threshold, recursive);
     }
 
     closelog();
