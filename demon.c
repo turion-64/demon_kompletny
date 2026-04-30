@@ -122,7 +122,7 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
     size_t file_size = st.st_size;
 
     //otwarcie celu do odczytu i zapisu, tworząc go jeśli nie istnieje
-    int fd_dst = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
+    int fd_dst = open(dst, O_RDWR | O_CREAT | O_TRUNC, st.st_mode & 0777);
     if (fd_dst < 0) {
         close(fd_src);
         return;
