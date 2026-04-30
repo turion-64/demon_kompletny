@@ -39,6 +39,7 @@ void demonizacja() {
 
     if (setsid() < 0) exit(EXIT_FAILURE);
 
+    //ignorujemy sygnały, które mogą nam przeszkadzać w działaniu
     signal(SIGCHLD, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
 
@@ -49,9 +50,11 @@ void demonizacja() {
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
 
+    //ustawienie katalogu roboczego na root i maski plików na 0
     umask(0);
     chdir("/");
 
+    //zamknięcie wszystkich otwartych deskryptorów
     int x;
     for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
         close(x);
@@ -96,6 +99,7 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
     int fd_src = open(src, O_RDONLY);
     if (fd_src < 0) return;
 
+    //pobranie rozmiaru pliku
     struct stat st;
     if (fstat(fd_src, &st) != 0) {
         close(fd_src);
@@ -120,6 +124,7 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
         char buffer[8192];
         ssize_t bytes_read;
         
+        //wykonujemy write dopóki read zwraca dane
         while ((bytes_read = read(fd_src, buffer, sizeof(buffer))) > 0) {
             write(fd_dst, buffer, bytes_read);
         }
@@ -155,11 +160,12 @@ void remove_recursive(const char *path) {
         snprintf(full_path, PATH_MAX, "%s/%s", path, entry->d_name);
 
         if (lstat(full_path, &st) == 0) {
-            //znaleźliśmy podkatalog
             if (S_ISDIR(st.st_mode)) {
+                //znaleźliśmy podkatalog
                 syslog(LOG_INFO, "Schodze glebiej do podkatalogu: %s", full_path);
                 remove_recursive(full_path);
             } else {
+                //znaleźliśmy zwykły plik
                 syslog(LOG_INFO, "Usuwanie pliku: %s", full_path);
                 unlink(full_path);
             }
