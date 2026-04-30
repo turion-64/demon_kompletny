@@ -297,7 +297,8 @@ int main(int argc, char *argv[]) {
                 time_left = sleep(time_left);
             }
         }
-
+        
+        //otrzymaliśmy sygnał
         if (signal_received) {
             syslog(LOG_INFO, "Demon wybudzony natychmiastowo przez sygnał SIGUSR1.");
             signal_received = 0;
