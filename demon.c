@@ -52,17 +52,30 @@ void demonizacja() {
 
     //ustawienie katalogu roboczego na root i maski plików na 0
     umask(0);
-    chdir("/");
+    if (chdir("/")) {
+        exit(EXIT_FAILURE);
+    }
 
     //zamknięcie wszystkich otwartych deskryptorów
     int x;
     for (x = sysconf(_SC_OPEN_MAX); x >= 0; x--) {
         close(x);
     }
+
+    //oprócz stdin, stdout i stderr które idą do /dev/null
+    int fd0 = open("/dev/null", O_RDWR);
+    int fd1 = dup(fd0);
+    int fd2 = dup(fd0);
+
+    if (fd0 != 0 || fd1 != 1 || fd2 != 2) {
+        exit(EXIT_FAILURE);
+    }
 }
 
 // funkcja kopiująca duże pliki za pomocą mmap (podpunkt b)
 void copy_file_mmap(int fd_src, int fd_dst, size_t size) {
+    if (size == 0) return;
+
     // ftruncate rozszerza fd_dst do rozmiaru źródła
     if (ftruncate(fd_dst, size) == -1) {
         syslog(LOG_ERR, "Błąd ftruncate: %s", strerror(errno));
@@ -126,7 +139,9 @@ void copy_file(const char *src, const char *dst, off_t threshold) {
         
         //wykonujemy write dopóki read zwraca dane
         while ((bytes_read = read(fd_src, buffer, sizeof(buffer))) > 0) {
-            write(fd_dst, buffer, bytes_read);
+            if (write(fd_dst, buffer, bytes_read) == -1) {
+                syslog(LOG_ERR, "Błąd zapisu do pliku: %s", strerror(errno));
+            }
         }
     }
 
@@ -283,7 +298,7 @@ int main(int argc, char *argv[]) {
 
     // start logowania
     openlog("DEMONIARZ", LOG_PID | LOG_CONS, LOG_USER);
-    syslog(LOG_INFO, "Demon synchronizacji uruchomiony. Źródło: %s, Cel: %s, Czas: %d s, Rekurencja: %d, Próg: %lld", 
+    syslog(LOG_INFO, "Demon synchronizacji uruchomiony. Źródło: %s, Cel: %s, Czas: %d s, Rekurencja: %d, Próg: %ld", 
            source_path, target_path, sleep_time, recursive, threshold);
 
     // rejestracja obsługi SIGUSR1
